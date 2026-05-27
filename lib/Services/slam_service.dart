@@ -1,21 +1,31 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:ar_flutter_plugin_2/datatypes/node_types.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_anchor_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_location_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_object_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_session_manager.dart';
+
 import 'package:ar_flutter_plugin_2/models/ar_anchor.dart';
 import 'package:ar_flutter_plugin_2/models/ar_hittest_result.dart';
 import 'package:ar_flutter_plugin_2/models/ar_node.dart';
-import 'package:ar_flutter_plugin_2/datatypes/node_types.dart';
-
 import 'package:vector_math/vector_math_64.dart';
+
 import '../Models/slam_pose.dart';
 
+
 /// NOTE:
-/// Since ar_flutter_plugin_2 has limited real camera pose APIs.
-/// So we use calibrated AR origin + graph navigation.
+/// ar_flutter_plugin_2 does NOT expose full
+/// camera pose APIs like native ARCore.
+
+/// So we use:
+/// Predefined graph navigation
+
+/// AR calibrated positioning
+
+/// This is enough for FYP-level
+/// indoor AR navigation.
 
 class SlamService {
   static final SlamService _instance = SlamService._internal();
@@ -24,12 +34,14 @@ class SlamService {
 
   SlamService._internal();
 
-  // Managers
+  // MANAGERS
   ARSessionManager? _sessionManager;
+
   ARObjectManager? _objectManager;
+
   ARAnchorManager? _anchorManager;
 
-  // Streams
+  // STREAMS
   final StreamController<SlamPose> _poseController =
       StreamController<SlamPose>.broadcast();
 
@@ -40,7 +52,7 @@ class SlamService {
 
   Stream<SlamTrackingState> get trackingStateStream => _stateController.stream;
 
-  // State
+  // STATE
   SlamTrackingState _trackingState = SlamTrackingState.initializing;
 
   SlamPose _currentPose = SlamPose.zero();
@@ -51,15 +63,12 @@ class SlamService {
 
   bool get isTracking => _trackingState == SlamTrackingState.tracking;
 
-  
-  // Calibration
-  /// Stable calibrated floor height
+  // CALIBRATION
   double _floorY = 0.0;
 
-  /// User-selected AR origin
   bool _isCalibrated = false;
 
-  // Pose Tracking
+  // POSE TRACKING
   double _lastX = 0;
   double _lastY = 0;
   double _lastZ = 0;
@@ -70,18 +79,16 @@ class SlamService {
 
   Timer? _poseTimer;
 
-  // Arrow System
+  // ARROW SYSTEM
   final List<ARNode> _activeArrowNodes = [];
   final List<ARAnchor> _activeArrowAnchors = [];
-
-  /// Current route
   List<Map<String, double>> _currentRoute = [];
 
-  /// Current visible route index
   int _currentRouteIndex = 0;
-
-  /// Render only nearby arrows
   static const int _visibleArrowWindow = 3;
+  bool _isUpdatingArrows = false;
+  DateTime _lastArrowUpdate = DateTime.now();
+  static const double _nodeReachThreshold = 1.2;
 
   // INITIALIZE
   Future<void> initialize({
@@ -91,7 +98,9 @@ class SlamService {
     required ARLocationManager locationManager,
   }) async {
     _sessionManager = sessionManager;
+
     _objectManager = objectManager;
+
     _anchorManager = anchorManager;
 
     await _sessionManager!.onInitialize(
@@ -103,7 +112,6 @@ class SlamService {
 
     await _objectManager!.onInitialize();
 
-    /// User tap = calibration point
     _sessionManager!.onPlaneOrPointTap = _onPlaneTapCalibration;
 
     _isSessionActive = true;
@@ -113,7 +121,7 @@ class SlamService {
     _startPoseTimer();
   }
 
-  // Calibration
+  // CALIBRATION
   void _onPlaneTapCalibration(List<ARHitTestResult> hits) {
     if (hits.isEmpty) return;
 
@@ -125,24 +133,30 @@ class SlamService {
     final y = transform.getColumn(3).y;
     final z = transform.getColumn(3).z;
 
+    if (x.isNaN || y.isNaN || z.isNaN) {
+      return;
+    }
+
     _lastX = x;
     _lastY = y;
     _lastZ = z;
 
-    _floorY = y;
+    if (!_isCalibrated) {
+      _floorY = y;
+    }
 
     _isCalibrated = true;
 
-    _updateState(SlamTrackingState.tracking);
-
     _addPoseToHistory(x, y, z);
+
+    _updateState(SlamTrackingState.tracking);
   }
 
-  // Pose Timer
+  // POSE TIMER
   void _startPoseTimer() {
     _poseTimer?.cancel();
 
-    _poseTimer = Timer.periodic(const Duration(milliseconds: 150), (_) {
+    _poseTimer = Timer.periodic(const Duration(milliseconds: 150), (_) async {
       if (!_isSessionActive) return;
 
       if (!_isCalibrated) return;
@@ -153,11 +167,11 @@ class SlamService {
 
       _poseController.add(pose);
 
-      _updateDynamicArrows();
+      await _updateDynamicArrows();
     });
   }
 
-  // Pose History
+  // POSE HISTORY
   void _addPoseToHistory(double x, double y, double z) {
     _poseHistory.add(_RawPose(x, y, z));
 
@@ -166,7 +180,7 @@ class SlamService {
     }
   }
 
-  // Smoothed Pose
+  // SMOOTHED POSE
   SlamPose _smoothedPose() {
     if (_poseHistory.isEmpty) {
       return SlamPose(
@@ -214,9 +228,11 @@ class SlamService {
     await _updateVisibleArrows();
   }
 
-  // Dynamic Arrow Updating
+  // DYNAMIC ROUTE UPDATING
   Future<void> _updateDynamicArrows() async {
     if (_currentRoute.isEmpty) return;
+
+    if (_isUpdatingArrows) return;
 
     if (_currentRouteIndex >= _currentRoute.length - 1) {
       return;
@@ -224,22 +240,40 @@ class SlamService {
 
     final next = _currentRoute[_currentRouteIndex];
 
-    final dx = (_lastX - (next['x'] ?? 0));
+    final targetX = next['x'] ?? 0;
+    final targetZ = next['z'] ?? 0;
 
-    final dz = (_lastZ - (next['z'] ?? 0));
+    final dx = (_lastX - targetX);
+
+    final dz = (_lastZ - targetZ);
 
     final distance = sqrt(dx * dx + dz * dz);
 
-    /// User reached node
-    if (distance < 0.8) {
+    if (distance < _nodeReachThreshold) {
+      final now = DateTime.now();
+
+      if (now.difference(_lastArrowUpdate).inMilliseconds < 1000) {
+        return;
+      }
+
+      _lastArrowUpdate = now;
+
       _currentRouteIndex++;
 
-      await _updateVisibleArrows();
+      if (_currentRouteIndex < _currentRoute.length - 1) {
+        _isUpdatingArrows = true;
+
+        await _updateVisibleArrows();
+
+        _isUpdatingArrows = false;
+      }
     }
   }
 
-  // Render only nearby arrows
+  // VISIBLE ARROWS
   Future<void> _updateVisibleArrows() async {
+    if (_isUpdatingArrows) return;
+
     await clearArrows();
 
     if (_currentRoute.length < 2) return;
@@ -250,6 +284,7 @@ class SlamService {
 
     for (int i = start; i < end; i++) {
       final current = _currentRoute[i];
+
       final next = _currentRoute[i + 1];
 
       final fromX = current['x'] ?? 0;
@@ -258,7 +293,10 @@ class SlamService {
       final toX = next['x'] ?? 0;
       final toZ = next['z'] ?? 0;
 
-      final angle = atan2(toX - fromX, toZ - fromZ);
+      final dx = toX - fromX;
+      final dz = toZ - fromZ;
+
+      final angle = atan2(dx, dz);
 
       final isExit = i == _currentRoute.length - 2;
 
@@ -272,7 +310,43 @@ class SlamService {
     }
   }
 
-  // Place Arrow
+  // OLD NAVIGATION SUPPORT
+  Future<void> placeDirectionArrow({
+    required double toGraphX,
+    required double toGraphZ,
+    required double scaleX,
+    required double scaleZ,
+  }) async {
+    if (!_isCalibrated) return;
+
+    final arTargetX = toGraphX / scaleX;
+
+    final arTargetZ = toGraphZ / scaleZ;
+
+    final dx = arTargetX - _lastX;
+
+    final dz = arTargetZ - _lastZ;
+
+    final angle = atan2(dx, dz);
+
+    await clearArrows();
+
+    final forwardDistance = 0.8;
+
+    final arrowX = _lastX + sin(angle) * forwardDistance;
+
+    final arrowZ = _lastZ + cos(angle) * forwardDistance;
+
+    await _placeArrowAt(
+      x: arrowX,
+      y: _floorY,
+      z: arrowZ,
+      rotationAngle: angle,
+      isExitArrow: false,
+    );
+  }
+
+  // PLACE ARROW
   Future<void> _placeArrowAt({
     required double x,
     required double y,
@@ -293,14 +367,15 @@ class SlamService {
 
       final node = ARNode(
         type: NodeType.localGLTF2,
+
         uri: isExitArrow ? 'models/exit_marker.glb' : 'models/arrow.glb',
-        scale: Vector3(
-          isExitArrow ? 0.45 : 0.30,
-          isExitArrow ? 0.45 : 0.30,
-          isExitArrow ? 0.45 : 0.30,
-        ),
-        position: Vector3(0, 0.05, 0),
+
+        scale: Vector3.all(isExitArrow ? 0.45 : 0.28),
+
+        position: Vector3(0, 0.03, 0),
+
         rotation: Vector4(0, 1, 0, rotationAngle),
+
         name: 'arrow_${DateTime.now().millisecondsSinceEpoch}',
       );
 
@@ -315,7 +390,7 @@ class SlamService {
     } catch (_) {}
   }
 
-  // Clear Arrows
+  // CLEAR ARROWS
   Future<void> clearArrows() async {
     for (final node in _activeArrowNodes) {
       try {
@@ -330,33 +405,11 @@ class SlamService {
     }
 
     _activeArrowNodes.clear();
+
     _activeArrowAnchors.clear();
   }
 
-  //place Direction 
-  Future<void> placeDirectionArrow({
-    required double toGraphX,
-    required double toGraphZ,
-    required double scaleX,
-    required double scaleZ,
-  }) async {
-    final arTargetX = toGraphX / scaleX;
-    final arTargetZ = toGraphZ / scaleZ;
-
-    final angle = atan2(arTargetX - _lastX, arTargetZ - _lastZ);
-
-    await clearArrows();
-
-    await _placeArrowAt(
-      x: _lastX,
-      y: _floorY,
-      z: _lastZ,
-      rotationAngle: angle,
-      isExitArrow: false,
-    );
-  }
-
-  // Floor Detection
+  // FLOOR DETECTION
   String detectCurrentFloor() {
     final y = _currentPose.y;
 
@@ -371,7 +424,7 @@ class SlamService {
     return 'Second';
   }
 
-  // State
+  // STATE
   void _updateState(SlamTrackingState state) {
     if (_trackingState == state) return;
 
@@ -380,8 +433,7 @@ class SlamService {
     _stateController.add(state);
   }
 
-  // Session Controls
-
+  // SESSION CONTROLS
   void pauseSession() {
     _poseTimer?.cancel();
 
@@ -398,10 +450,7 @@ class SlamService {
     _updateState(SlamTrackingState.initializing);
   }
 
-  // ─────────────────────────────────────────────
-  // Reset
-  // ─────────────────────────────────────────────
-
+  // RESET
   Future<void> reset() async {
     await clearArrows();
 
@@ -424,7 +473,7 @@ class SlamService {
     _updateState(SlamTrackingState.initializing);
   }
 
-  // Dispose
+  // DISPOSE
   Future<void> dispose() async {
     _poseTimer?.cancel();
 
@@ -444,8 +493,7 @@ class SlamService {
   }
 }
 
-// Internal Pose Model
-
+// INTERNAL POSE MODEL
 class _RawPose {
   final double x;
   final double y;
@@ -453,10 +501,6 @@ class _RawPose {
 
   _RawPose(this.x, this.y, this.z);
 }
-
-
-
-
 
 
 
