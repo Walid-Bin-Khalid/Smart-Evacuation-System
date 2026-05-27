@@ -35,9 +35,7 @@ class _SlamInitializationScreenState extends State<SlamInitializationScreen> {
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────
   //  Manual route → EvacuationNavigationScreen
-  // ─────────────────────────────────────────────
   Future<void> startEvacuation() async {
     if (selectedFloor == null || selectedAreaType == null) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -1,6 +1,4 @@
-// ─────────────────────────────────────────────
-//  SlamPose — Real-time pose data from ARCore
-// ─────────────────────────────────────────────
+//  SlamPose Real-time pose data from ARCore
 class SlamPose {
   final double x;
   final double y;
