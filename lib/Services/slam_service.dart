@@ -366,10 +366,11 @@ class SlamService {
       _activeArrowAnchors.add(anchor);
 
       final node = ARNode(
-        type: NodeType.localGLTF2,
+        type: NodeType.webGLB,
 
-        uri: isExitArrow ? 'models/exit_marker.glb' : 'models/arrow.glb',
-
+        uri: isExitArrow
+            ? 'https://github.com/chrisraff/3d-maze/raw/refs/heads/master/models/arrow.glb'
+            : 'https://github.com/chrisraff/3d-maze/raw/refs/heads/master/models/arrow.glb',
         scale: Vector3.all(isExitArrow ? 0.45 : 0.28),
 
         position: Vector3(0, 0.03, 0),
