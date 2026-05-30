@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'signup_screen.dart';
 import 'reset_password_screen.dart';
 import '../../Screens/Home/home_screen.dart';
-// import '../Permissions/permission_screen.dart';
+import '../Permissions/permission_screen.dart';
 import '../../widgets/primary_button.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -56,10 +57,20 @@ class _LoginScreenState extends State<LoginScreen> {
         context,
       ).showSnackBar(const SnackBar(content: Text("Login Successful")));
 
-      // Navigate to Home Screen
+      // Permission check — agar koi permission missing ho toh PermissionScreen
+      final locationOk = await Permission.location.isGranted;
+      final cameraOk = await Permission.camera.isGranted;
+      final notifOk = await Permission.notification.isGranted;
+      final allGranted = locationOk && cameraOk && notifOk;
+
+      if (!mounted) return;
+
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        MaterialPageRoute(
+          builder: (_) =>
+              allGranted ? const HomeScreen() : const PermissionScreen(),
+        ),
       );
     } else {
       // Invalid Credentials
@@ -251,13 +262,6 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 }
-
-
-
-
-
-
-
 
 
 
