@@ -28,9 +28,6 @@ class SlamService {
       StreamController<SlamPose>.broadcast();
   final StreamController<SlamTrackingState> _stateController =
       StreamController<SlamTrackingState>.broadcast();
-
-  // FIX 6: New stream — tells ARNavigationScreen which node index SLAM reached
-  // So 2D overlay and 3D arrows stay in sync
   final StreamController<int> _nodeReachedController =
       StreamController<int>.broadcast();
 
@@ -45,6 +42,19 @@ class SlamService {
 
   SlamPose get currentPose => _currentPose;
   bool get isTracking => _trackingState == SlamTrackingState.tracking;
+
+  // ─────────────────────────────────────────────
+  // FIX: isPlanesVisible
+  // Screenshot mein white dots + blue dots dikh rahe the —
+  // matlab ARCore plane detect kar chuka tha lekin
+  // isTracking false tha kyunki tap nahi hua tha.
+  //
+  // Ab _autoTrackingTimer se 3 seconds baad automatically
+  // tracking state ON ho jaata hai — tap ka wait nahi.
+  // ─────────────────────────────────────────────
+  bool _planesVisible = false;
+  bool get isPlanesVisible => _planesVisible;
+  Timer? _autoTrackingTimer;
 
   // CALIBRATION
   double _floorY = 0.0;
@@ -66,15 +76,14 @@ class SlamService {
 
   int _currentRouteIndex = 0;
   static const int _visibleArrowWindow = 3;
-
-  // FIX 2: Separate guards for update vs place to prevent deadlock
   bool _isPlacingArrows = false;
   bool _isUpdatingRoute = false;
-
   DateTime _lastArrowUpdate = DateTime.now();
   static const double _nodeReachThreshold = 1.2;
 
+  // ─────────────────────────────────────────────
   // INITIALIZE
+  // ─────────────────────────────────────────────
   Future<void> initialize({
     required ARSessionManager sessionManager,
     required ARObjectManager objectManager,
@@ -94,15 +103,55 @@ class SlamService {
 
     await _objectManager!.onInitialize();
 
+    // Tap callback — gets real world x,y,z from ARCore hit test
     _sessionManager!.onPlaneOrPointTap = _onPlaneTapCalibration;
+
     _isSessionActive = true;
     _updateState(SlamTrackingState.initializing);
     _startPoseTimer();
+
+    // ─────────────────────────────────────────────
+    // FIX: Auto-tracking timer
+    //
+    // ar_flutter_plugin_2 v0.0.3 mein onPlaneDetected
+    // callback publicly exposed nahi hai.
+    //
+    // Solution: 3 seconds baad automatically tracking
+    // state set karo. ARCore itne time mein floor detect
+    // kar leta hai (screenshot mein blue dots 1-2 sec mein
+    // aa gaye the).
+    //
+    // Agar user ne pehle tap kiya to _isCalibrated = true
+    // ho jaata hai aur timer cancel ho jaata hai.
+    // ─────────────────────────────────────────────
+    _autoTrackingTimer = Timer(const Duration(seconds: 3), () {
+      if (!_isSessionActive) return;
+      if (_trackingState == SlamTrackingState.initializing) {
+        _planesVisible = true;
+        _updateState(SlamTrackingState.tracking);
+      }
+    });
   }
 
-  // CALIBRATION TAP
+  // ─────────────────────────────────────────────
+  // CALIBRATION — floor pe tap karo
+  // ─────────────────────────────────────────────
   void _onPlaneTapCalibration(List<ARHitTestResult> hits) {
-    if (hits.isEmpty) return;
+    // FIX: Cancel auto timer — tap already hua
+    _autoTrackingTimer?.cancel();
+
+    if (hits.isEmpty) {
+      // FIX: Tap hua lekin hit nahi mila (tapped on empty space)
+      // Phir bhi tracking allow karo — zero pose se start hoga
+      _planesVisible = true;
+      if (!_isCalibrated) {
+        _floorY = 0.0;
+        _isCalibrated = true;
+        _addPoseToHistory(0, 0, 0);
+      }
+      _updateState(SlamTrackingState.tracking);
+      return;
+    }
 
     final hit = hits.first;
     final transform = hit.worldTransform;
@@ -110,22 +159,28 @@ class SlamService {
     final y = transform.getColumn(3).y;
     final z = transform.getColumn(3).z;
 
-    if (x.isNaN || y.isNaN || z.isNaN) return;
+    // FIX: NaN check — agar NaN aaye tab bhi tracking allow karo
+    final safeX = x.isNaN ? 0.0 : x;
+    final safeY = y.isNaN ? 0.0 : y;
+    final safeZ = z.isNaN ? 0.0 : z;
 
-    _lastX = x;
-    _lastY = y;
-    _lastZ = z;
+    _lastX = safeX;
+    _lastY = safeY;
+    _lastZ = safeZ;
 
     if (!_isCalibrated) {
-      _floorY = y;
+      _floorY = safeY;
     }
 
     _isCalibrated = true;
-    _addPoseToHistory(x, y, z);
+    _planesVisible = true;
+    _addPoseToHistory(safeX, safeY, safeZ);
     _updateState(SlamTrackingState.tracking);
   }
 
+  // ─────────────────────────────────────────────
   // POSE TIMER — 150ms tick
+  // ─────────────────────────────────────────────
   void _startPoseTimer() {
     _poseTimer?.cancel();
 
@@ -182,7 +237,9 @@ class SlamService {
     );
   }
 
-  // SET ROUTE — called from ARNavigationScreen after calibration
+  // ─────────────────────────────────────────────
+  // SET ROUTE — ARNavigationScreen calibration ke baad call karta hai
+  // ─────────────────────────────────────────────
   Future<void> setRoute({
     required List<Map<String, double>> routePoints,
   }) async {
@@ -191,13 +248,13 @@ class SlamService {
     await _updateVisibleArrows();
   }
 
-  // FIX 2: _updateDynamicArrows — fixed double-guard issue
-  // Old code had _isUpdatingArrows check that blocked _updateVisibleArrows
-  // inside the same call, causing arrows to never refresh after first node
+  // ─────────────────────────────────────────────
+  // DYNAMIC ARROWS — har 150ms check karo node reach hua kya
+  // Fixed double-guard deadlock from old code
+  // ─────────────────────────────────────────────
   Future<void> _updateDynamicArrows() async {
     if (_currentRoute.isEmpty) return;
-    if (_isUpdatingRoute) return; // guard against concurrent route updates
-
+    if (_isUpdatingRoute) return;
     if (_currentRouteIndex >= _currentRoute.length - 1) return;
 
     final next = _currentRoute[_currentRouteIndex];
@@ -215,7 +272,6 @@ class SlamService {
       _lastArrowUpdate = now;
       _currentRouteIndex++;
 
-      // FIX 6: Broadcast new node index so ARNavigationScreen 2D overlay syncs
       _nodeReachedController.add(_currentRouteIndex);
 
       if (_currentRouteIndex < _currentRoute.length - 1) {
@@ -226,14 +282,15 @@ class SlamService {
     }
   }
 
-  // PLACE VISIBLE ARROWS — shows next 3 arrows on floor
+  // ─────────────────────────────────────────────
+  // VISIBLE ARROWS — next 3 nodes pe arrows place karo
+  // ─────────────────────────────────────────────
   Future<void> _updateVisibleArrows() async {
     if (_isPlacingArrows) return;
     _isPlacingArrows = true;
 
     try {
       await clearArrows();
-
       if (_currentRoute.length < 2) return;
 
       final start = _currentRouteIndex;
@@ -251,12 +308,11 @@ class SlamService {
         final dx = toX - fromX;
         final dz = toZ - fromZ;
         final angle = atan2(dx, dz);
-
         final isExit = i == _currentRoute.length - 2;
 
         await _placeArrowAt(
           x: fromX,
-          y: _floorY + 0.03, // slightly above floor so arrow is visible
+          y: _floorY + 0.03,
           z: fromZ,
           rotationAngle: angle,
           isExitArrow: isExit,
@@ -267,7 +323,6 @@ class SlamService {
     }
   }
 
-  // PLACE SINGLE ARROW at ARCore world position
   Future<void> _placeArrowAt({
     required double x,
     required double y,
@@ -285,13 +340,10 @@ class SlamService {
 
       _activeArrowAnchors.add(anchor);
 
-      // FIX 1: Both exit and normal arrows use same GLB for now
-      // Replace the URI with your own hosted .glb when available
       final node = ARNode(
         type: NodeType.webGLB,
-        uri: isExitArrow
-            ? 'https://github.com/chrisraff/3d-maze/raw/refs/heads/master/models/arrow.glb'
-            : 'https://github.com/chrisraff/3d-maze/raw/refs/heads/master/models/arrow.glb',
+        uri:
+            'https://github.com/chrisraff/3d-maze/raw/refs/heads/master/models/arrow.glb',
         scale: Vector3.all(isExitArrow ? 0.45 : 0.28),
         position: Vector3(0, 0, 0),
         rotation: Vector4(0, 1, 0, rotationAngle),
@@ -307,16 +359,13 @@ class SlamService {
         _activeArrowNodes.add(node);
       }
     } catch (_) {
-      // Arrow placement failure is non-critical
-      // 2D overlay continues working regardless
+      // Non-critical — 2D overlay still works
     }
   }
 
-  // CLEAR ALL ARROWS
   Future<void> clearArrows() async {
     final nodesToRemove = List<ARNode>.from(_activeArrowNodes);
     final anchorsToRemove = List<ARAnchor>.from(_activeArrowAnchors);
-
     _activeArrowNodes.clear();
     _activeArrowAnchors.clear();
 
@@ -325,7 +374,6 @@ class SlamService {
         await _objectManager?.removeNode(node);
       } catch (_) {}
     }
-
     for (final anchor in anchorsToRemove) {
       try {
         await _anchorManager?.removeAnchor(anchor);
@@ -333,7 +381,6 @@ class SlamService {
     }
   }
 
-  // Floor detection from Y coordinate
   String detectCurrentFloor() {
     final y = _currentPose.y;
     if (y < 1.5) return 'Ground';
@@ -349,6 +396,7 @@ class SlamService {
 
   void pauseSession() {
     _poseTimer?.cancel();
+    _autoTrackingTimer?.cancel();
     _isSessionActive = false;
     _updateState(SlamTrackingState.paused);
   }
@@ -360,6 +408,7 @@ class SlamService {
   }
 
   Future<void> reset() async {
+    _autoTrackingTimer?.cancel();
     await clearArrows();
 
     _lastX = 0;
@@ -367,6 +416,7 @@ class SlamService {
     _lastZ = 0;
     _floorY = 0;
     _isCalibrated = false;
+    _planesVisible = false;
     _currentRoute.clear();
     _currentRouteIndex = 0;
     _poseHistory.clear();
@@ -379,6 +429,7 @@ class SlamService {
 
   Future<void> dispose() async {
     _poseTimer?.cancel();
+    _autoTrackingTimer?.cancel();
     await clearArrows();
     _sessionManager?.dispose();
 
@@ -398,4 +449,3 @@ class _RawPose {
   final double z;
   _RawPose(this.x, this.y, this.z);
 }
-

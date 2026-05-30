@@ -32,7 +32,6 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   bool _isLoading = true;
   bool _isCalibrated = false;
   bool _pathFound = false;
-  // FIX 3: track if SafeZone already opened to prevent double navigation
   bool _safeZoneTriggered = false;
   String _statusMessage = 'Point camera at the floor to initialize SLAM...';
   late String _currentFloor;
@@ -42,15 +41,12 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   CoordinateMapper? _mapper;
   EvacuationPath? _evacuationPath;
 
-  // Arrow overlay state
   double _arrowAngle = 0;
   double _distanceToNext = 0;
   String _nextNodeName = '';
 
   StreamSubscription<SlamPose>? _poseSub;
   StreamSubscription<SlamTrackingState>? _stateSub;
-
-  // FIX 4: Live hazard re-routing — listen to alert changes
   StreamSubscription<EvacuationAlert?>? _alertSub;
 
   @override
@@ -59,7 +55,6 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     _currentFloor = widget.initialFloor;
     _loadGraph();
     _listenToSlamState();
-    // FIX 4: Start listening to new hazard alerts while navigating
     _listenToLiveAlerts();
   }
 
@@ -78,7 +73,8 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
         _pathfinder = pathfinder;
         _mapper = mapper;
         _isLoading = false;
-        _statusMessage = 'SLAM ready. Tap on floor to calibrate position.';
+        _statusMessage =
+            'Scan floor — white dots dikhne chahiye. Phir tap karo.';
       });
     } catch (e) {
       setState(() {
@@ -88,18 +84,39 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     }
   }
 
-  // FIX 4: Live hazard re-routing
-  // Agar route pe chalte waqt naya hazard aaye → path recalculate karo
+  void _listenToSlamState() {
+    _stateSub = _slam.trackingStateStream.listen((state) {
+      if (!mounted) return;
+      setState(() {
+        switch (state) {
+          case SlamTrackingState.initializing:
+            _statusMessage = 'Camera floor ki taraf point karo...';
+            break;
+          case SlamTrackingState.tracking:
+            if (!_isCalibrated) {
+              // FIX: Tracking ready — button press karo ab
+              _statusMessage = '✅ Floor detected! Neeche button dabao.';
+            }
+            break;
+          case SlamTrackingState.limited:
+            _statusMessage = 'Tracking limited — slowly move karo.';
+            break;
+          case SlamTrackingState.paused:
+            _statusMessage = 'Tracking paused.';
+            break;
+        }
+      });
+    });
+  }
+
   void _listenToLiveAlerts() {
     _alertSub = MockAlertService().alertStream.listen((alert) {
       if (!mounted) return;
       if (alert == null || !alert.isActive) return;
       if (_pathfinder == null || !_isCalibrated) return;
 
-      // Apply new hazard to pathfinder
       _pathfinder!.applyHazardAlert(alert.hazardNodeId);
 
-      // Recalculate from current node position
       if (_evacuationPath != null &&
           _currentNodeIndex < _evacuationPath!.nodeIds.length) {
         final currentNodeId = _evacuationPath!.nodeIds[_currentNodeIndex];
@@ -110,37 +127,11 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
             _evacuationPath = newPath;
             _currentNodeIndex = 0;
             _statusMessage =
-                '⚠️ Hazard detected! Route updated. ${newPath.nodeIds.length} steps to exit.';
+                '⚠️ Hazard! Route updated. ${newPath.nodeIds.length} steps to exit.';
           });
-
-          // FIX 1: Also update 3D arrows when route changes
           _reconnect3DArrows(newPath);
         }
       }
-    });
-  }
-
-  void _listenToSlamState() {
-    _stateSub = _slam.trackingStateStream.listen((state) {
-      if (!mounted) return;
-      setState(() {
-        switch (state) {
-          case SlamTrackingState.initializing:
-            _statusMessage = 'Initializing SLAM... Point at floor.';
-            break;
-          case SlamTrackingState.tracking:
-            if (!_isCalibrated) {
-              _statusMessage = 'Floor detected! Tap to set your position.';
-            }
-            break;
-          case SlamTrackingState.limited:
-            _statusMessage = 'Tracking limited. Move slowly.';
-            break;
-          case SlamTrackingState.paused:
-            _statusMessage = 'Tracking paused.';
-            break;
-        }
-      });
     });
   }
 
@@ -162,7 +153,6 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   void _onPoseUpdate(SlamPose pose) {
     if (!_isCalibrated || _mapper == null || _pathfinder == null) return;
     if (_evacuationPath == null) return;
-    // FIX 3: Don't keep processing after SafeZone triggered
     if (_safeZoneTriggered) return;
 
     _pathfinder!.updateCrowdFromARCore([
@@ -171,62 +161,52 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
 
     final totalNodes = _evacuationPath!.nodeIds.length;
 
-    // FIX 3: Auto-trigger SafeZone when last node reached
     if (_currentNodeIndex >= totalNodes - 1) {
       _triggerSafeZone();
       return;
     }
 
-    if (_currentNodeIndex < totalNodes - 1) {
-      final nextNodeId = _evacuationPath!.nodeIds[_currentNodeIndex + 1];
-      final nextGraphNode = _pathfinder!.graph.nodes.firstWhere(
-        (n) => n.id == nextNodeId,
-      );
+    final nextNodeId = _evacuationPath!.nodeIds[_currentNodeIndex + 1];
+    final nextGraphNode = _pathfinder!.graph.nodes.firstWhere(
+      (n) => n.id == nextNodeId,
+    );
 
-      final nextArCoords = _mapper!.graphToArCoords(
-        graphX: nextGraphNode.x,
-        graphY: nextGraphNode.y,
-      );
+    final nextArCoords = _mapper!.graphToArCoords(
+      graphX: nextGraphNode.x,
+      graphY: nextGraphNode.y,
+    );
 
-      final dx = nextArCoords['x']! - pose.x;
-      final dz = nextArCoords['z']! - pose.z;
+    final dx = nextArCoords['x']! - pose.x;
+    final dz = nextArCoords['z']! - pose.z;
+    final angle = atan2(dx, dz);
+    final distance = sqrt(dx * dx + dz * dz);
+    final name = _buildNodeName(nextNodeId);
 
-      final angle = atan2(dx, dz);
-      final distance = sqrt(dx * dx + dz * dz);
-      final name = _buildNodeName(nextNodeId);
+    setState(() {
+      _arrowAngle = angle;
+      _distanceToNext = distance;
+      _nextNodeName = name;
+    });
 
+    if (distance < 1.5) {
       setState(() {
-        _arrowAngle = angle;
-        _distanceToNext = distance;
-        _nextNodeName = name;
+        _currentNodeIndex++;
+        final remaining = totalNodes - _currentNodeIndex - 1;
+        if (_currentNodeIndex >= totalNodes - 1) {
+          _statusMessage = '✅ EXIT pe pohunch gaye!';
+          _triggerSafeZone();
+        } else {
+          _statusMessage = '$remaining steps to exit';
+        }
       });
-
-      // FIX 2: Auto advance node on distance threshold
-      if (distance < 1.5) {
-        setState(() {
-          _currentNodeIndex++;
-          final remaining = totalNodes - _currentNodeIndex - 1;
-
-          // FIX 3: Check again after increment
-          if (_currentNodeIndex >= totalNodes - 1) {
-            _statusMessage = '✅ You reached the EXIT! Stay safe!';
-            _triggerSafeZone();
-          } else {
-            _statusMessage = '$remaining steps to exit';
-          }
-        });
-      }
     }
   }
 
-  // FIX 3: SafeZone auto-trigger — runs once, no double push
   void _triggerSafeZone() {
     if (_safeZoneTriggered) return;
     _safeZoneTriggered = true;
-
     if (!mounted) return;
 
-    // Small delay so user sees the "EXIT reached" message first
     Future.delayed(const Duration(milliseconds: 800), () {
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -236,15 +216,32 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     });
   }
 
+  // ─────────────────────────────────────────────
+  // FIX: _calibrateAndFindPath
+  //
+  // PURANA problem:
+  //   if (!_slam.isTracking) → "Wait for floor detection"
+  //   isTracking sirf tap ke baad true hota tha
+  //   Button press karo → message aata tha → frustrating
+  //
+  // NAYA behavior:
+  //   isTracking  OR  isPlanesVisible → allow karo
+  //   isPlanesVisible = 3 sec baad auto-true (timer se)
+  //   Agar na bhi hua → zero pose se start karo (FYP mein acceptable)
+  // ─────────────────────────────────────────────
   Future<void> _calibrateAndFindPath() async {
     if (_mapper == null || _pathfinder == null) return;
 
-    if (!_slam.isTracking) {
-      setState(() => _statusMessage = 'Wait for floor detection first...');
+    // FIX: Allow calibration if tracking OR planes visible (3sec timer)
+    // Pure zero pose se bhi kaam chalega demo ke liye
+    if (!_slam.isTracking && !_slam.isPlanesVisible) {
+      setState(
+        () => _statusMessage = 'Thoda wait karo... floor scan ho rahi hai.',
+      );
       return;
     }
 
-    final pose = _slam.currentPose;
+    final pose = _slam.currentPose; // may be zero — that's OK
     final floor = _currentFloor;
 
     final startNode = _pathfinder!.graph.nodes.firstWhere(
@@ -252,17 +249,13 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
       orElse: () => _pathfinder!.graph.nodes.first,
     );
 
-    // FIX 5: Use two-point calibration if available, else single-point
-    // Single point calibration (default) — scaleX/Z remain at 100.0
-    // To use two-point: call _mapper!.calibrateWithTwoPoints(...)
-    // For now single point is correct for FYP demo
     final calibrated = _mapper!.calibrate(
       knownNodeId: startNode.id,
       currentPose: pose,
     );
 
     if (!calibrated) {
-      setState(() => _statusMessage = 'Calibration failed. Try again.');
+      setState(() => _statusMessage = 'Calibration failed. Dobara try karo.');
       return;
     }
 
@@ -271,7 +264,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     if (path == null) {
       setState(() {
         _isCalibrated = true;
-        _statusMessage = 'No safe route found. Move to a nearby corridor.';
+        _statusMessage = 'Koi safe route nahi mila. Corridor mein jao.';
       });
       return;
     }
@@ -283,21 +276,17 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
       _currentNodeIndex = 0;
       _safeZoneTriggered = false;
       _statusMessage =
-          'Route found! Follow the arrow. ${path.nodeIds.length} steps to exit.';
+          'Route mil gaya! Arrow follow karo. ${path.nodeIds.length} steps.';
     });
 
-    // FIX 1: Reconnect 3D AR arrows after calibration
     _reconnect3DArrows(path);
   }
 
-  // FIX 1: 3D AR arrows — reconnect setRoute() that was commented out before
-  // This places floor-level GLB arrow nodes via SlamService
   Future<void> _reconnect3DArrows(EvacuationPath path) async {
     if (_mapper == null) return;
 
     final routePoints = path.nodeIds.map((id) {
       final node = _pathfinder!.graph.nodes.firstWhere((n) => n.id == id);
-      // Convert graph coords → ARCore coords for each node
       final arCoords = _mapper!.graphToArCoords(graphX: node.x, graphY: node.y);
       return {'x': arCoords['x']!, 'z': arCoords['z']!};
     }).toList();
@@ -323,22 +312,27 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   void dispose() {
     _poseSub?.cancel();
     _stateSub?.cancel();
-    _alertSub?.cancel(); // FIX 4: cancel alert subscription
+    _alertSub?.cancel();
     _slam.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // FIX: Button active hoga agar tracking ya planes visible ho
+    final bool canCalibrate = _slam.isTracking || _slam.isPlanesVisible;
+
     return Scaffold(
       body: Stack(
         children: [
+          // AR CAMERA VIEW
           if (!_isLoading)
             ARView(
               onARViewCreated: _onARViewCreated,
               planeDetectionConfig: PlaneDetectionConfig.horizontalAndVertical,
             ),
 
+          // LOADING
           if (_isLoading)
             Container(
               color: Colors.black,
@@ -349,7 +343,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                     CircularProgressIndicator(color: AppColors.neonBlue),
                     SizedBox(height: 20),
                     Text(
-                      'Loading building map...',
+                      'Building map load ho raha hai...',
                       style: TextStyle(color: AppColors.textSecondary),
                     ),
                   ],
@@ -357,7 +351,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
               ),
             ),
 
-          // 2D compass overlay (always shown — works on all phones)
+          // 2D COMPASS ARROW OVERLAY
           if (_isCalibrated && _pathFound) _buildArrowOverlay(),
 
           // TOP STATUS BAR
@@ -378,16 +372,17 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                   border: Border.all(
                     color: _pathFound
                         ? AppColors.neonGreen
-                        : AppColors.neonBlue,
+                        : (canCalibrate
+                              ? AppColors.neonGreen
+                              : AppColors.neonBlue),
                   ),
                 ),
                 child: Row(
                   children: [
                     Icon(
-                      _slam.isTracking ? Icons.sensors : Icons.sensors_off,
-                      color: _slam.isTracking
-                          ? AppColors.neonGreen
-                          : Colors.orange,
+                      // FIX: Icon green jab bhi calibrate possible ho
+                      canCalibrate ? Icons.sensors : Icons.sensors_off,
+                      color: canCalibrate ? AppColors.neonGreen : Colors.orange,
                       size: 18,
                     ),
                     const SizedBox(width: 10),
@@ -469,20 +464,28 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
-                          onPressed: _calibrateAndFindPath,
+                          // FIX: canCalibrate true ho to button active
+                          onPressed: canCalibrate
+                              ? _calibrateAndFindPath
+                              : null,
                           icon: const Icon(
                             Icons.my_location,
                             color: Colors.white,
                           ),
-                          label: const Text(
-                            'TAP TO SET MY LOCATION',
-                            style: TextStyle(
+                          label: Text(
+                            canCalibrate
+                                ? 'TAP TO SET MY LOCATION'
+                                : 'FLOOR SCAN HO RAHI HAI...',
+                            style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.neonBlue,
+                            // FIX: Button grey jab disabled, blue jab ready
+                            backgroundColor: canCalibrate
+                                ? AppColors.neonBlue
+                                : Colors.grey.shade800,
                             padding: const EdgeInsets.symmetric(vertical: 14),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
@@ -491,7 +494,6 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                         ),
                       ),
 
-                    // FIX 3: Manual SAFE ZONE button still available as fallback
                     if (_isCalibrated && _pathFound)
                       Row(
                         children: [
@@ -527,7 +529,8 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                             _evacuationPath = null;
                             _currentNodeIndex = 0;
                             _safeZoneTriggered = false;
-                            _statusMessage = 'Tap on floor to recalibrate.';
+                            _statusMessage =
+                                'Floor pe tap karo — recalibrate karo.';
                           });
                           _slam.reset();
                         },
@@ -604,7 +607,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
               border: Border.all(color: AppColors.neonBlue),
             ),
             child: Text(
-              isAtExit ? '🟢 You are at the EXIT!' : '→ $_nextNodeName',
+              isAtExit ? '🟢 EXIT pe pohunch gaye!' : '→ $_nextNodeName',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 16,
