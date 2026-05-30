@@ -74,7 +74,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
         _mapper = mapper;
         _isLoading = false;
         _statusMessage =
-            'Scan floor — white dots dikhne chahiye. Phir tap karo.';
+            'Scan floor, can see white dots? tap on the floor.';
       });
     } catch (e) {
       setState(() {
@@ -90,16 +90,16 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
       setState(() {
         switch (state) {
           case SlamTrackingState.initializing:
-            _statusMessage = 'Camera floor ki taraf point karo...';
+            _statusMessage = 'Point Camera at the floor';
             break;
           case SlamTrackingState.tracking:
             if (!_isCalibrated) {
               // FIX: Tracking ready — button press karo ab
-              _statusMessage = '✅ Floor detected! Neeche button dabao.';
+              _statusMessage = 'Floor detected! press that button blow.';
             }
             break;
           case SlamTrackingState.limited:
-            _statusMessage = 'Tracking limited — slowly move karo.';
+            _statusMessage = 'Tracking is limited, move slowly.';
             break;
           case SlamTrackingState.paused:
             _statusMessage = 'Tracking paused.';
@@ -193,7 +193,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
         _currentNodeIndex++;
         final remaining = totalNodes - _currentNodeIndex - 1;
         if (_currentNodeIndex >= totalNodes - 1) {
-          _statusMessage = '✅ EXIT pe pohunch gaye!';
+          _statusMessage = 'EXIT SUCCESSFUL!';
           _triggerSafeZone();
         } else {
           _statusMessage = '$remaining steps to exit';
@@ -236,7 +236,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     // Pure zero pose se bhi kaam chalega demo ke liye
     if (!_slam.isTracking && !_slam.isPlanesVisible) {
       setState(
-        () => _statusMessage = 'Thoda wait karo... floor scan ho rahi hai.',
+        () => _statusMessage = 'Be pateint, Floor is Scaning.',
       );
       return;
     }
@@ -264,7 +264,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     if (path == null) {
       setState(() {
         _isCalibrated = true;
-        _statusMessage = 'Koi safe route nahi mila. Corridor mein jao.';
+        _statusMessage = 'No safe route Found, head towards nearest corridor.';
       });
       return;
     }
@@ -295,8 +295,8 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   }
 
   String _buildNodeName(String nodeId) {
-    if (nodeId.contains('EXIT')) return '🟢 EXIT';
-    if (nodeId.contains('STAIRS')) return '🪜 Stairs';
+    if (nodeId.contains('EXIT')) return 'EXIT';
+    if (nodeId.contains('STAIRS')) return 'Stairs';
     if (nodeId.endsWith('_C')) {
       final match = RegExp(r'_R(\d+)_C').firstMatch(nodeId);
       return 'Room ${match?.group(1) ?? ''}';
@@ -475,7 +475,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                           label: Text(
                             canCalibrate
                                 ? 'TAP TO SET MY LOCATION'
-                                : 'FLOOR SCAN HO RAHI HAI...',
+                                : 'FLOOR IS SCANING.....',
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -530,7 +530,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                             _currentNodeIndex = 0;
                             _safeZoneTriggered = false;
                             _statusMessage =
-                                'Floor pe tap karo — recalibrate karo.';
+                                'Tap on the Floor then recalibrate.';
                           });
                           _slam.reset();
                         },
@@ -607,7 +607,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
               border: Border.all(color: AppColors.neonBlue),
             ),
             child: Text(
-              isAtExit ? '🟢 EXIT pe pohunch gaye!' : '→ $_nextNodeName',
+              isAtExit ? 'Evacuation Successful!' : '→ $_nextNodeName',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 16,
