@@ -39,6 +39,9 @@ dependencies:
   # AR-CORE:
   ar_flutter_plugin_2: ^0.0.3
   vector_math: ^2.1.4
+  
+  # Allow to fetch data from Mob Sensors
+  sensors_plus: ^4.0.2
 
 dev_dependencies:
   flutter_test:

@@ -6,10 +6,10 @@ import 'package:ar_flutter_plugin_2/managers/ar_anchor_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_location_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_object_manager.dart';
 import 'package:ar_flutter_plugin_2/managers/ar_session_manager.dart';
-
 import 'package:ar_flutter_plugin_2/models/ar_anchor.dart';
 import 'package:ar_flutter_plugin_2/models/ar_hittest_result.dart';
 import 'package:ar_flutter_plugin_2/models/ar_node.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:vector_math/vector_math_64.dart';
 
 import '../Models/slam_pose.dart';
@@ -23,7 +23,7 @@ class SlamService {
   ARObjectManager? _objectManager;
   ARAnchorManager? _anchorManager;
 
-  // STREAMS
+  // ── STREAMS ──
   final StreamController<SlamPose> _poseController =
       StreamController<SlamPose>.broadcast();
   final StreamController<SlamTrackingState> _stateController =
@@ -35,7 +35,7 @@ class SlamService {
   Stream<SlamTrackingState> get trackingStateStream => _stateController.stream;
   Stream<int> get nodeReachedStream => _nodeReachedController.stream;
 
-  // STATE
+  // ── STATE ──
   SlamTrackingState _trackingState = SlamTrackingState.initializing;
   SlamPose _currentPose = SlamPose.zero();
   bool _isSessionActive = false;
@@ -43,33 +43,40 @@ class SlamService {
   SlamPose get currentPose => _currentPose;
   bool get isTracking => _trackingState == SlamTrackingState.tracking;
 
-  // ─────────────────────────────────────────────
-  // FIX: isPlanesVisible
-  // Screenshot mein white dots + blue dots dikh rahe the —
-  // matlab ARCore plane detect kar chuka tha lekin
-  // isTracking false tha kyunki tap nahi hua tha.
-  //
-  // Ab _autoTrackingTimer se 3 seconds baad automatically
-  // tracking state ON ho jaata hai — tap ka wait nahi.
-  // ─────────────────────────────────────────────
   bool _planesVisible = false;
   bool get isPlanesVisible => _planesVisible;
   Timer? _autoTrackingTimer;
 
-  // CALIBRATION
+  // ── CALIBRATION ──
   double _floorY = 0.0;
   bool _isCalibrated = false;
 
-  // POSE TRACKING
+  // ─────────────────────────────────────────────
+  // POSE TRACKING — sensor based
+  // _lastX, _lastZ ab accelerometer se update honge
+  // ─────────────────────────────────────────────
   double _lastX = 0;
   double _lastY = 0;
   double _lastZ = 0;
+
+  // Accelerometer integration ke liye
+  double _velX = 0;
+  double _velZ = 0;
+  double _accX = 0;
+  double _accZ = 0;
+  DateTime _lastAccTime = DateTime.now();
+
+  // Gyroscope heading ke liye
+  double _headingRad = 0; // radians — phone ka yaw
+
+  StreamSubscription? _accelSub;
+  StreamSubscription? _gyroSub;
 
   final List<_RawPose> _poseHistory = [];
   static const int _smoothingWindow = 5;
   Timer? _poseTimer;
 
-  // ARROW SYSTEM
+  // ── ARROW SYSTEM ──
   final List<ARNode> _activeArrowNodes = [];
   final List<ARAnchor> _activeArrowAnchors = [];
   List<Map<String, double>> _currentRoute = [];
@@ -103,27 +110,16 @@ class SlamService {
 
     await _objectManager!.onInitialize();
 
-    // Tap callback — gets real world x,y,z from ARCore hit test
     _sessionManager!.onPlaneOrPointTap = _onPlaneTapCalibration;
 
     _isSessionActive = true;
     _updateState(SlamTrackingState.initializing);
+
+    // Sensors start karo
+    _startSensors();
     _startPoseTimer();
 
-    // ─────────────────────────────────────────────
-    // FIX: Auto-tracking timer
-    //
-    // ar_flutter_plugin_2 v0.0.3 mein onPlaneDetected
-    // callback publicly exposed nahi hai.
-    //
-    // Solution: 3 seconds baad automatically tracking
-    // state set karo. ARCore itne time mein floor detect
-    // kar leta hai (screenshot mein blue dots 1-2 sec mein
-    // aa gaye the).
-    //
-    // Agar user ne pehle tap kiya to _isCalibrated = true
-    // ho jaata hai aur timer cancel ho jaata hai.
-    // ─────────────────────────────────────────────
+    // 3 sec baad auto tracking
     _autoTrackingTimer = Timer(const Duration(seconds: 3), () {
       if (!_isSessionActive) return;
       if (_trackingState == SlamTrackingState.initializing) {
@@ -134,19 +130,79 @@ class SlamService {
   }
 
   // ─────────────────────────────────────────────
-  // CALIBRATION — floor pe tap karo
+  // SENSORS — Accelerometer + Gyroscope
+  // Yahi hai asli fix — movement yahan se aayegi
+  // ─────────────────────────────────────────────
+  void _startSensors() {
+    // Gyroscope — heading track karo
+    _gyroSub =
+        gyroscopeEventStream(
+          samplingPeriod: const Duration(milliseconds: 50),
+        ).listen((event) {
+          if (!_isCalibrated) return;
+          final now = DateTime.now();
+          final dt = now.difference(_lastAccTime).inMilliseconds / 1000.0;
+          // Y axis = yaw (left/right rotation)
+          _headingRad += event.y * dt;
+        });
+
+    // Accelerometer — position update karo
+    _accelSub =
+        accelerometerEventStream(
+          samplingPeriod: const Duration(milliseconds: 50),
+        ).listen((event) {
+          if (!_isCalibrated) return;
+
+          final now = DateTime.now();
+          final dt = now.difference(_lastAccTime).inMilliseconds / 1000.0;
+          _lastAccTime = now;
+
+          if (dt <= 0 || dt > 0.5) return; // bad delta — skip
+
+          // World frame mein convert karo heading use karke
+          // Phone ke local X,Z → World X,Z
+          final cosH = cos(_headingRad);
+          final sinH = sin(_headingRad);
+
+          // Gravity remove karo (simple high-pass)
+          // event.x = lateral, event.z = forward/back
+          final rawAx = event.x;
+          final rawAz =
+              -event.z; // negative kyunki forward = negative Z in sensor
+
+          // Threshold — choti movements ignore karo (noise)
+          final ax = rawAx.abs() > 0.15 ? rawAx * 0.08 : 0.0;
+          final az = rawAz.abs() > 0.15 ? rawAz * 0.08 : 0.0;
+
+          // World coordinates mein rotate karo
+          _accX = ax * cosH - az * sinH;
+          _accZ = ax * sinH + az * cosH;
+
+          // Velocity integrate karo
+          _velX = (_velX + _accX * dt) * 0.85; // damping — drift rok
+          _velZ = (_velZ + _accZ * dt) * 0.85;
+
+          // Position update karo
+          _lastX += _velX * dt;
+          _lastZ += _velZ * dt;
+
+          // Pose history mein add karo
+          _addPoseToHistory(_lastX, _lastY, _lastZ);
+        });
+  }
+
+  // ─────────────────────────────────────────────
+  // CALIBRATION — floor pe tap
   // ─────────────────────────────────────────────
   void _onPlaneTapCalibration(List<ARHitTestResult> hits) {
-    // FIX: Cancel auto timer — tap already hua
     _autoTrackingTimer?.cancel();
 
     if (hits.isEmpty) {
-      // FIX: Tap hua lekin hit nahi mila (tapped on empty space)
-      // Phir bhi tracking allow karo — zero pose se start hoga
       _planesVisible = true;
       if (!_isCalibrated) {
         _floorY = 0.0;
         _isCalibrated = true;
+        _lastAccTime = DateTime.now();
         _addPoseToHistory(0, 0, 0);
       }
       _updateState(SlamTrackingState.tracking);
@@ -159,7 +215,6 @@ class SlamService {
     final y = transform.getColumn(3).y;
     final z = transform.getColumn(3).z;
 
-    // FIX: NaN check — agar NaN aaye tab bhi tracking allow karo
     final safeX = x.isNaN ? 0.0 : x;
     final safeY = y.isNaN ? 0.0 : y;
     final safeZ = z.isNaN ? 0.0 : z;
@@ -174,6 +229,9 @@ class SlamService {
 
     _isCalibrated = true;
     _planesVisible = true;
+    _lastAccTime = DateTime.now();
+    _velX = 0;
+    _velZ = 0;
     _addPoseToHistory(safeX, safeY, safeZ);
     _updateState(SlamTrackingState.tracking);
   }
@@ -230,7 +288,7 @@ class SlamService {
       y: avgY,
       z: avgZ,
       rotationX: 0,
-      rotationY: 0,
+      rotationY: _headingRad, // heading bhi pass karo
       rotationZ: 0,
       timestamp: DateTime.now(),
       trackingState: SlamTrackingState.tracking,
@@ -238,7 +296,7 @@ class SlamService {
   }
 
   // ─────────────────────────────────────────────
-  // SET ROUTE — ARNavigationScreen calibration ke baad call karta hai
+  // SET ROUTE
   // ─────────────────────────────────────────────
   Future<void> setRoute({
     required List<Map<String, double>> routePoints,
@@ -249,8 +307,7 @@ class SlamService {
   }
 
   // ─────────────────────────────────────────────
-  // DYNAMIC ARROWS — har 150ms check karo node reach hua kya
-  // Fixed double-guard deadlock from old code
+  // DYNAMIC ARROWS — node reach check
   // ─────────────────────────────────────────────
   Future<void> _updateDynamicArrows() async {
     if (_currentRoute.isEmpty) return;
@@ -283,7 +340,7 @@ class SlamService {
   }
 
   // ─────────────────────────────────────────────
-  // VISIBLE ARROWS — next 3 nodes pe arrows place karo
+  // VISIBLE ARROWS — next 3 nodes
   // ─────────────────────────────────────────────
   Future<void> _updateVisibleArrows() async {
     if (_isPlacingArrows) return;
@@ -358,9 +415,7 @@ class SlamService {
       if (nodeAdded == true) {
         _activeArrowNodes.add(node);
       }
-    } catch (_) {
-      // Non-critical — 2D overlay still works
-    }
+    } catch (_) {}
   }
 
   Future<void> clearArrows() async {
@@ -397,12 +452,15 @@ class SlamService {
   void pauseSession() {
     _poseTimer?.cancel();
     _autoTrackingTimer?.cancel();
+    _accelSub?.cancel();
+    _gyroSub?.cancel();
     _isSessionActive = false;
     _updateState(SlamTrackingState.paused);
   }
 
   void resumeSession() {
     _isSessionActive = true;
+    _startSensors();
     _startPoseTimer();
     _updateState(SlamTrackingState.initializing);
   }
@@ -414,6 +472,11 @@ class SlamService {
     _lastX = 0;
     _lastY = 0;
     _lastZ = 0;
+    _velX = 0;
+    _velZ = 0;
+    _accX = 0;
+    _accZ = 0;
+    _headingRad = 0;
     _floorY = 0;
     _isCalibrated = false;
     _planesVisible = false;
@@ -430,6 +493,8 @@ class SlamService {
   Future<void> dispose() async {
     _poseTimer?.cancel();
     _autoTrackingTimer?.cancel();
+    _accelSub?.cancel();
+    _gyroSub?.cancel();
     await clearArrows();
     _sessionManager?.dispose();
 
@@ -449,3 +514,5 @@ class _RawPose {
   final double z;
   _RawPose(this.x, this.y, this.z);
 }
+
+
