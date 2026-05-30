@@ -48,7 +48,7 @@ class CoordinateMapper {
   void _computeDefaultScale() {
     if (graph.nodes.isEmpty) return;
 
-    const double assumedBuildingMeters = 30.0;
+    const double assumedBuildingMeters = 139.0;
 
     double minX = double.infinity, maxX = double.negativeInfinity;
     double minY = double.infinity, maxY = double.negativeInfinity;

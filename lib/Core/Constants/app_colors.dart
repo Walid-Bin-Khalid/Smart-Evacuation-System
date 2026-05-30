@@ -8,7 +8,7 @@ class AppColors {
   static const Color textPrimary = Colors.white;
   static const Color textSecondary = Color(0xFF94A3B8);
 
-  static Null get backgroundColor => null;
-
+  static const Color backgroundColor = Color(0xFF020817);
   //static var backgroundColor;
+
 }
