@@ -30,10 +30,15 @@ class SlamService {
       StreamController<SlamTrackingState>.broadcast();
   final StreamController<int> _nodeReachedController =
       StreamController<int>.broadcast();
+  final StreamController<String> _floorController =
+      StreamController<
+        String
+      >.broadcast(); // FIX floor: node-based floor stream
 
   Stream<SlamPose> get poseStream => _poseController.stream;
   Stream<SlamTrackingState> get trackingStateStream => _stateController.stream;
   Stream<int> get nodeReachedStream => _nodeReachedController.stream;
+  Stream<String> get floorStream => _floorController.stream; // FIX floor
 
   // ── STATE ──
   SlamTrackingState _trackingState = SlamTrackingState.initializing;
@@ -49,6 +54,8 @@ class SlamService {
 
   // ── CALIBRATION ──
   double _floorY = 0.0;
+  String _currentFloor = 'Ground'; // node-based floor
+  String get currentFloor => _currentFloor;
   bool _isCalibrated = false;
 
   // ─────────────────────────────────────────────
@@ -61,11 +68,12 @@ class SlamService {
 
   // Accelerometer integration ke liye
   double _velX = 0;
+  int _lostTrackingCount = 0; // FIX lost tracking
   double _velZ = 0;
   double _accX = 0;
   double _accZ = 0;
   DateTime _lastAccTime = DateTime.now();
-  DateTime _lastGyroTime = DateTime.now(); // FIX: separate timer for gyro
+  DateTime _lastGyroTime = DateTime.now(); // FIX gyro: separate timer
 
   // Gyroscope heading ke liye
   double _headingRad = 0; // radians — phone ka yaw
@@ -143,9 +151,8 @@ class SlamService {
           if (!_isCalibrated) return;
           final now = DateTime.now();
           final dt =
-              now.difference(_lastGyroTime).inMilliseconds /
-              1000.0; // FIX: own timer
-          _lastGyroTime = now; // FIX: update gyro timer, not accel timer
+              now.difference(_lastGyroTime).inMilliseconds / 1000.0; // FIX gyro
+          _lastGyroTime = now;
           // Y axis = yaw (left/right rotation)
           _headingRad += event.y * dt;
         });
@@ -187,8 +194,32 @@ class SlamService {
           _velZ = (_velZ + _accZ * dt) * 0.85;
 
           // Position update karo
+          final prevX = _lastX;
+          final prevZ = _lastZ;
           _lastX += _velX * dt;
           _lastZ += _velZ * dt;
+
+          // FIX lost: sanity check — 1 second mein 3m se zyada movement impossible indoors
+          final jumpDist =
+              (_lastX - prevX) * (_lastX - prevX) +
+              (_lastZ - prevZ) * (_lastZ - prevZ);
+          if (jumpDist > 9.0) {
+            // 3m threshold
+            _lastX = prevX;
+            _lastZ = prevZ;
+            _velX = 0;
+            _velZ = 0;
+            _lostTrackingCount++;
+            if (_lostTrackingCount > 10) {
+              // 10 bad readings = 1.5 sec
+              _lostTrackingCount = 0;
+              _updateState(
+                SlamTrackingState.limited,
+              ); // signal screen to show recalibrate
+            }
+          } else {
+            _lostTrackingCount = 0;
+          }
 
           // Pose history mein add karo
           _addPoseToHistory(_lastX, _lastY, _lastZ);
@@ -234,7 +265,6 @@ class SlamService {
     _isCalibrated = true;
     _planesVisible = true;
     _lastAccTime = DateTime.now();
-    _lastGyroTime = DateTime.now(); // FIX: reset gyro timer too
     _velX = 0;
     _velZ = 0;
     _addPoseToHistory(safeX, safeY, safeZ);
@@ -333,6 +363,33 @@ class SlamService {
 
       _lastArrowUpdate = now;
       _currentRouteIndex++;
+
+      // FIX snap: node reach pe exact position reset — drift eliminate
+      if (_currentRouteIndex < _currentRoute.length) {
+        final snapped = _currentRoute[_currentRouteIndex];
+        _lastX = snapped['x'] ?? _lastX;
+        _lastZ = snapped['z'] ?? _lastZ;
+        _velX = 0;
+        _velZ = 0;
+        _poseHistory.clear();
+
+        // FIX floor: floorNum se floor detect karo (ar_navigation_screen se aata hai)
+        // 0 = Ground, 1 = First, 2 = Second
+        final floorNum = (snapped['floorNum'] ?? -1).toInt();
+        String newFloor = _currentFloor;
+       if (floorNum == 0) {
+          newFloor = 'Ground';
+        } else if (floorNum == 1) {
+          newFloor = 'First';
+        } else if (floorNum == 2) {
+          newFloor = 'Second';
+        }
+
+        if (newFloor != _currentFloor) {
+          _currentFloor = newFloor;
+          _floorController.add(_currentFloor); // screen ko notify karo
+        }
+      }
 
       _nodeReachedController.add(_currentRouteIndex);
 
@@ -442,10 +499,7 @@ class SlamService {
   }
 
   String detectCurrentFloor() {
-    final y = _currentPose.y;
-    if (y < 1.5) return 'Ground';
-    if (y < 4.5) return 'First';
-    return 'Second';
+    return _currentFloor; // node-based — sensor se nahi
   }
 
   void _updateState(SlamTrackingState state) {
@@ -479,6 +533,7 @@ class SlamService {
     _lastZ = 0;
     _velX = 0;
     _velZ = 0;
+    _lastGyroTime = DateTime.now(); // FIX gyro
     _accX = 0;
     _accZ = 0;
     _headingRad = 0;
@@ -506,6 +561,7 @@ class SlamService {
     if (!_poseController.isClosed) await _poseController.close();
     if (!_stateController.isClosed) await _stateController.close();
     if (!_nodeReachedController.isClosed) await _nodeReachedController.close();
+    if (!_floorController.isClosed) await _floorController.close(); // FIX floor
 
     _currentRoute.clear();
     _poseHistory.clear();
@@ -519,4 +575,5 @@ class _RawPose {
   final double z;
   _RawPose(this.x, this.y, this.z);
 }
+
 

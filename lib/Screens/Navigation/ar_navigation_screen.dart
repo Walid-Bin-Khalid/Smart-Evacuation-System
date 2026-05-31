@@ -48,6 +48,8 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   StreamSubscription<SlamPose>? _poseSub;
   StreamSubscription<SlamTrackingState>? _stateSub;
   StreamSubscription<EvacuationAlert?>? _alertSub;
+  StreamSubscription<String>? _floorSub;
+  StreamSubscription<int>? _nodeReachedSub; // single source of truth
 
   @override
   void initState() {
@@ -56,6 +58,8 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     _loadGraph();
     _listenToSlamState();
     _listenToLiveAlerts();
+    _listenToFloorChanges();
+    _listenToNodeReached(); // single source of truth
   }
 
   Future<void> _loadGraph() async {
@@ -73,8 +77,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
         _pathfinder = pathfinder;
         _mapper = mapper;
         _isLoading = false;
-        _statusMessage =
-            'Scan floor, can see white dots? tap on the floor.';
+        _statusMessage = 'Scan floor, can see white dots? tap on the floor.';
       });
     } catch (e) {
       setState(() {
@@ -106,6 +109,37 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
             break;
         }
       });
+    });
+  }
+
+  // Single source of truth — node progress sirf SlamService se
+  void _listenToNodeReached() {
+    _nodeReachedSub = _slam.nodeReachedStream.listen((index) {
+      if (!mounted) return;
+      final totalNodes = _evacuationPath?.nodeIds.length ?? 0;
+      setState(() {
+        _currentNodeIndex = index;
+        if (_currentNodeIndex >= totalNodes - 1) {
+          _statusMessage = '✅ EXIT pe pohunch gaye!';
+          _triggerSafeZone();
+        } else {
+          _statusMessage =
+              '${totalNodes - _currentNodeIndex - 1} steps to exit';
+        }
+      });
+    });
+  }
+
+  // FIX floor: SlamService se floor change receive karo
+  void _listenToFloorChanges() {
+    _floorSub = _slam.floorStream.listen((floor) {
+      if (!mounted) return;
+      if (_currentFloor != floor) {
+        setState(() {
+          _currentFloor = floor;
+          _statusMessage = '📍 Floor changed: $floor';
+        });
+      }
     });
   }
 
@@ -235,9 +269,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     // FIX: Allow calibration if tracking OR planes visible (3sec timer)
     // Pure zero pose se bhi kaam chalega demo ke liye
     if (!_slam.isTracking && !_slam.isPlanesVisible) {
-      setState(
-        () => _statusMessage = 'Be pateint, Floor is Scaning.',
-      );
+      setState(() => _statusMessage = 'Be pateint, Floor is Scaning.');
       return;
     }
 
@@ -288,7 +320,11 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     final routePoints = path.nodeIds.map((id) {
       final node = _pathfinder!.graph.nodes.firstWhere((n) => n.id == id);
       final arCoords = _mapper!.graphToArCoords(graphX: node.x, graphY: node.y);
-      return {'x': arCoords['x']!, 'z': arCoords['z']!};
+      // FIX floor: floor encoded as number so SlamService can detect stair transitions
+      double floorNum = 0;
+      if (node.floor == 'First') floorNum = 1;
+      if (node.floor == 'Second') floorNum = 2;
+      return {'x': arCoords['x']!, 'z': arCoords['z']!, 'floorNum': floorNum};
     }).toList();
 
     await _slam.setRoute(routePoints: routePoints);
@@ -313,7 +349,9 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     _poseSub?.cancel();
     _stateSub?.cancel();
     _alertSub?.cancel();
-    _slam.dispose();
+    _floorSub?.cancel();
+    _nodeReachedSub?.cancel();
+    _slam.pauseSession(); // singleton reuse — dispose nahi, pause karo
     super.dispose();
   }
 
