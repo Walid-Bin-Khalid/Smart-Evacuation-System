@@ -65,6 +65,7 @@ class SlamService {
   double _accX = 0;
   double _accZ = 0;
   DateTime _lastAccTime = DateTime.now();
+  DateTime _lastGyroTime = DateTime.now(); // FIX: separate timer for gyro
 
   // Gyroscope heading ke liye
   double _headingRad = 0; // radians — phone ka yaw
@@ -141,7 +142,10 @@ class SlamService {
         ).listen((event) {
           if (!_isCalibrated) return;
           final now = DateTime.now();
-          final dt = now.difference(_lastAccTime).inMilliseconds / 1000.0;
+          final dt =
+              now.difference(_lastGyroTime).inMilliseconds /
+              1000.0; // FIX: own timer
+          _lastGyroTime = now; // FIX: update gyro timer, not accel timer
           // Y axis = yaw (left/right rotation)
           _headingRad += event.y * dt;
         });
@@ -230,6 +234,7 @@ class SlamService {
     _isCalibrated = true;
     _planesVisible = true;
     _lastAccTime = DateTime.now();
+    _lastGyroTime = DateTime.now(); // FIX: reset gyro timer too
     _velX = 0;
     _velZ = 0;
     _addPoseToHistory(safeX, safeY, safeZ);
@@ -514,5 +519,4 @@ class _RawPose {
   final double z;
   _RawPose(this.x, this.y, this.z);
 }
-
 
