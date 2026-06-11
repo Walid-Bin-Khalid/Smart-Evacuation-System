@@ -67,7 +67,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               infoRow('Employee ID', widget.employeeId),
               const SizedBox(height: 15),
 
-              infoRow('Department', widget.department),
+              infoRow('Role', widget.department),
             ],
           ),
 

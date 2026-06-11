@@ -23,7 +23,6 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
   final List<String> areaTypes = ['room', 'corridor', 'stairs', 'door'];
 
   final TextEditingController roomController = TextEditingController();
-
   final TextEditingController hazardController = TextEditingController();
 
   @override
@@ -51,33 +50,57 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
         ? 'F1'
         : 'F2';
 
-    // ignore: unused_local_variable
     String hazardNodeId;
 
     switch (selectedAreaType) {
       case 'room':
         hazardNodeId = '${prefix}_R${roomNo}_C';
         break;
-
       case 'corridor':
         hazardNodeId = '${prefix}_C$roomNo';
         break;
-
       case 'stairs':
         hazardNodeId = '${prefix}_STAIRS';
         break;
-
       case 'door':
         hazardNodeId = '${prefix}_R${roomNo}_D1';
         break;
-
       default:
         hazardNodeId = '${prefix}_${roomNo.toUpperCase()}';
     }
 
+    // TO-DO: Firebase — send alert to Firestore
+    // await FirebaseFirestore.instance.collection('alerts').add({
+    //   'hazardNodeId' : hazardNodeId,
+    //   'hazardType'   : hazardController.text.trim(),
+    //   'floor'        : selectedFloor,
+    //   'areaType'     : selectedAreaType,
+    //   'reportedBy'   : FirebaseAuth.instance.currentUser?.uid,
+    //   'timestamp'    : FieldValue.serverTimestamp(),
+    //   'isActive'     : true,
+    // });
+
+    // Abhi ke liye MockAlertService trigger karo
+    // MockAlertService().triggerMockAlert(hazardNodeId: hazardNodeId);
+
+    debugPrint('Hazard Node: $hazardNodeId');
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const AlertSendingScreen()),
+    );
+  }
+
+  // ── Reusable styled container (same as dropdowns) ──
+  Widget _styledField({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.neonBlue),
+      ),
+      child: child,
     );
   }
 
@@ -92,6 +115,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
             children: [
               const SizedBox(height: 50),
 
+              // ── Attached Picture ──
               if (widget.capturedImage != null) ...[
                 Row(
                   children: [
@@ -104,9 +128,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                         fit: BoxFit.cover,
                       ),
                     ),
-
                     const SizedBox(width: 12),
-
                     const Expanded(
                       child: Text(
                         "Attached Picture",
@@ -118,7 +140,6 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 20),
               ],
 
@@ -136,7 +157,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
 
               const SizedBox(height: 35),
 
-              // Floor Dropdown
+              // ── Floor ──
               const Text(
                 'Floor *',
                 style: TextStyle(
@@ -144,31 +165,19 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   color: Colors.white,
                 ),
               ),
-
               const SizedBox(height: 10),
-
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: AppColors.cardColor,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.neonBlue),
-                ),
-
+              _styledField(
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: selectedFloor,
                     dropdownColor: AppColors.cardColor,
                     iconEnabledColor: Colors.white,
                     isExpanded: true,
-
                     hint: const Text(
                       'Select Floor *',
                       style: TextStyle(color: AppColors.textSecondary),
                     ),
-
                     style: const TextStyle(color: Colors.white),
-
                     items: floors
                         .map(
                           (f) => DropdownMenuItem(
@@ -177,7 +186,6 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                           ),
                         )
                         .toList(),
-
                     onChanged: (v) => setState(() => selectedFloor = v),
                   ),
                 ),
@@ -185,7 +193,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
 
               const SizedBox(height: 20),
 
-              // Area Type
+              // ── Area Type ──
               const Text(
                 'Area Type *',
                 style: TextStyle(
@@ -193,31 +201,19 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   color: Colors.white,
                 ),
               ),
-
               const SizedBox(height: 10),
-
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: AppColors.cardColor,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.neonBlue),
-                ),
-
+              _styledField(
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: selectedAreaType,
                     dropdownColor: AppColors.cardColor,
                     iconEnabledColor: Colors.white,
                     isExpanded: true,
-
                     hint: const Text(
                       'Area Type *',
                       style: TextStyle(color: AppColors.textSecondary),
                     ),
-
                     style: const TextStyle(color: Colors.white),
-
                     items: areaTypes
                         .map(
                           (t) => DropdownMenuItem(
@@ -226,7 +222,6 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                           ),
                         )
                         .toList(),
-
                     onChanged: (v) => setState(() => selectedAreaType = v),
                   ),
                 ),
@@ -234,22 +229,50 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
 
               const SizedBox(height: 20),
 
-              // Room No
-              TextField(
-                controller: roomController,
-                keyboardType: TextInputType.number,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(hintText: 'Room No (e.g. 4, 9)'),
+              // ── Room No ──
+              const Text(
+                'Room No',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _styledField(
+                child: TextField(
+                  controller: roomController,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. 4, 9',
+                    hintStyle: TextStyle(color: AppColors.textSecondary),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
               ),
 
               const SizedBox(height: 20),
 
-              // Hazard Type
-              TextField(
-                controller: hazardController,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Hazard Type (e.g. fire, smoke)',
+              // ── Hazard Type ──
+              const Text(
+                'Hazard Type',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _styledField(
+                child: TextField(
+                  controller: hazardController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. fire, smoke',
+                    hintStyle: TextStyle(color: AppColors.textSecondary),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(vertical: 16),
+                  ),
                 ),
               ),
 
@@ -263,4 +286,8 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
     );
   }
 }
+
+
+
+
 
