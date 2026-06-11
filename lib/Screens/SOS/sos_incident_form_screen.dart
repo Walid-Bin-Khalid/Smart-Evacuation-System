@@ -1,9 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../Core/Constants/app_colors.dart';
 import '../../widgets/primary_button.dart';
+import '../../Services/api_service.dart';
 import 'alert_sending_screen.dart';
 
 class SOSIncidentFormScreen extends StatefulWidget {
@@ -24,74 +26,86 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
 
   final TextEditingController roomController = TextEditingController();
   final TextEditingController hazardController = TextEditingController();
+  final TextEditingController messageController = TextEditingController();
+
+  bool _isLoading = false;
 
   @override
   void dispose() {
     roomController.dispose();
     hazardController.dispose();
+    messageController.dispose();
     super.dispose();
   }
 
-  void submitAlert() {
+  void submitAlert() async {
+    // ── Validation ───────────────────────────────────────
     if (selectedFloor == null || selectedAreaType == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Floor and Area Type are required')),
-      );
+      _showSnack('Floor and Area Type are required');
+      return;
+    }
+    if (hazardController.text.trim().isEmpty) {
+      _showSnack('Hazard Type is required');
       return;
     }
 
-    final roomNo = roomController.text.trim().isEmpty
-        ? selectedAreaType!.toUpperCase()
-        : roomController.text.trim();
+    setState(() => _isLoading = true);
 
-    final prefix = selectedFloor == 'Ground'
-        ? 'G'
-        : selectedFloor == 'First'
-        ? 'F1'
-        : 'F2';
+    try {
+      // ── SharedPrefs se employee info ─────────────────
+      final prefs = await SharedPreferences.getInstance();
+      final employeeId = prefs.getString('employeeId') ?? 'UNKNOWN';
+      final employeeName = prefs.getString('fullName') ?? 'Unknown';
 
-    String hazardNodeId;
+      // ── roomNumber: null agar empty (logically correct) ──
+      final roomInput = roomController.text.trim();
+      final roomNumber = roomInput.isEmpty ? null : roomInput;
 
-    switch (selectedAreaType) {
-      case 'room':
-        hazardNodeId = '${prefix}_R${roomNo}_C';
-        break;
-      case 'corridor':
-        hazardNodeId = '${prefix}_C$roomNo';
-        break;
-      case 'stairs':
-        hazardNodeId = '${prefix}_STAIRS';
-        break;
-      case 'door':
-        hazardNodeId = '${prefix}_R${roomNo}_D1';
-        break;
-      default:
-        hazardNodeId = '${prefix}_${roomNo.toUpperCase()}';
+      // ── Auto message ─────────────────────────────────
+      final message = messageController.text.trim().isEmpty
+          ? '${hazardController.text.trim()} reported on $selectedFloor floor'
+          : messageController.text.trim();
+
+      // ── API call (severity auto-calculate hogi andar) ──
+      final result = await ApiService().createSosAlert(
+        hazardType: hazardController.text.trim(),
+        floor: selectedFloor!,
+        areaType: selectedAreaType!,
+        roomNumber: roomNumber, // null OK hai
+        reportedBy: employeeId,
+        reportedByName: employeeName,
+        message: message,
+        imageFile: widget.capturedImage,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const AlertSendingScreen()),
+        );
+      } else {
+        _showSnack(result.error ?? 'Alert failed', isError: true);
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnack('Unexpected error: $e', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
 
-    // TO-DO: Firebase — send alert to Firestore
-    // await FirebaseFirestore.instance.collection('alerts').add({
-    //   'hazardNodeId' : hazardNodeId,
-    //   'hazardType'   : hazardController.text.trim(),
-    //   'floor'        : selectedFloor,
-    //   'areaType'     : selectedAreaType,
-    //   'reportedBy'   : FirebaseAuth.instance.currentUser?.uid,
-    //   'timestamp'    : FieldValue.serverTimestamp(),
-    //   'isActive'     : true,
-    // });
-
-    // Abhi ke liye MockAlertService trigger karo
-    // MockAlertService().triggerMockAlert(hazardNodeId: hazardNodeId);
-
-    debugPrint('Hazard Node: $hazardNodeId');
-
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const AlertSendingScreen()),
+  void _showSnack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: isError ? Colors.red : null,
+      ),
     );
   }
 
-  // ── Reusable styled container (same as dropdowns) ──
   Widget _styledField({required Widget child}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -115,7 +129,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
             children: [
               const SizedBox(height: 50),
 
-              // ── Attached Picture ──
+              // ── Attached image preview ──
               if (widget.capturedImage != null) ...[
                 Row(
                   children: [
@@ -131,7 +145,7 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
-                        "Attached Picture",
+                        'Attached Picture',
                         style: TextStyle(
                           color: AppColors.neonGreen,
                           fontWeight: FontWeight.bold,
@@ -147,24 +161,15 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                 'REPORT INCIDENT',
                 style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
               ),
-
               const SizedBox(height: 10),
-
               const Text(
                 'Provide emergency details below.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
-
               const SizedBox(height: 35),
 
               // ── Floor ──
-              const Text(
-                'Floor *',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
+              _fieldLabel('Floor *'),
               const SizedBox(height: 10),
               _styledField(
                 child: DropdownButtonHideUnderline(
@@ -190,17 +195,10 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 20),
 
               // ── Area Type ──
-              const Text(
-                'Area Type *',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
+              _fieldLabel('Area Type *'),
               const SizedBox(height: 10),
               _styledField(
                 child: DropdownButtonHideUnderline(
@@ -226,17 +224,10 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 20),
 
-              // ── Room No ──
-              const Text(
-                'Room No',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
+              // ── Room No (optional) ──
+              _fieldLabel('Room No'),
               const SizedBox(height: 10),
               _styledField(
                 child: TextField(
@@ -244,24 +235,17 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   keyboardType: TextInputType.number,
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
-                    hintText: 'e.g. 4, 9',
+                    hintText: 'e.g. 4, 9  (optional)',
                     hintStyle: TextStyle(color: AppColors.textSecondary),
                     border: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(vertical: 16),
                   ),
                 ),
               ),
-
               const SizedBox(height: 20),
 
               // ── Hazard Type ──
-              const Text(
-                'Hazard Type',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
+              _fieldLabel('Hazard Type *'),
               const SizedBox(height: 10),
               _styledField(
                 child: TextField(
@@ -275,19 +259,38 @@ class _SOSIncidentFormScreenState extends State<SOSIncidentFormScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 20),
 
+              // ── Message (optional) ──
+              _fieldLabel('Message (Optional)'),
+              const SizedBox(height: 10),
+              _styledField(
+                child: TextField(
+                  controller: messageController,
+                  maxLines: 2,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    hintText: 'Describe the emergency...',
+                    hintStyle: TextStyle(color: AppColors.textSecondary),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ),
               const SizedBox(height: 40),
 
-              PrimaryButton(text: 'SEND ALERT', onTap: submitAlert),
+              _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : PrimaryButton(text: 'SEND ALERT', onTap: submitAlert),
             ],
           ),
         ),
       ),
     );
   }
+
+  Widget _fieldLabel(String text) => Text(
+    text,
+    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+  );
 }
-
-
-
-
-

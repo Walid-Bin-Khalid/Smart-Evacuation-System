@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../Core/Constants/app_colors.dart';
 import '../../Services/graph_loader_service.dart';
-import '../../Services/mock_alert_service.dart';
+import '../../Services/websocket_service.dart';
 import '../../Services/pathfinding_service.dart';
 import '../../widgets/primary_button.dart';
 import 'ar_navigation_screen.dart';
@@ -55,7 +55,7 @@ class _SlamInitializationScreenState extends State<SlamInitializationScreen> {
 
       final pathfinder = PathfindingService(graph);
 
-      final activeAlert = MockAlertService().currentAlert;
+      final activeAlert = WebSocketService().currentAlert;
       if (activeAlert != null && activeAlert.isActive) {
         pathfinder.applyHazardAlert(activeAlert.hazardNodeId);
       }

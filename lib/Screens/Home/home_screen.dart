@@ -5,13 +5,14 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../Core/Constants/app_colors.dart';
-import '../../Services/mock_alert_service.dart';
 import '../Alert/emergency_alert_receiving_screen.dart';
 import '../SOS/sos_confirmation_screen.dart';
 import '../Profile/profile_screen.dart';
+import '../../Services/websocket_service.dart';
 import '../Navigation/slam_initialization_screen.dart';
+import '../../Core/Constants/app_colors.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -25,8 +26,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String gpsStatus = "Checking...";
   String lastSync = "--";
 
+  // ── User info ──
+  String _displayName = 'Employee';
+  String _employeeId = '';
+  String _role = 'Employee';
+
   // ── Alert State ──
-  final MockAlertService _alertService = MockAlertService();
+  final WebSocketService _alertService = WebSocketService(); // ← CHANGED
   StreamSubscription<EvacuationAlert?>? _alertSubscription;
   EvacuationAlert? _currentAlert;
 
@@ -35,20 +41,29 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _loadUserInfo();
     checkInternet();
     checkGPS();
     updateSyncTime();
     _listenToAlerts();
   }
 
-  //  Alert stream listener
-  //  Baad mein RealAlertService same stream dega
+  Future<void> _loadUserInfo() async {
+    // ← NEW
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _displayName = prefs.getString('fullName') ?? 'Employee';
+      _employeeId = prefs.getString('employeeId') ?? '';
+      _role = prefs.getString('role') ?? 'Employee';
+    });
+  }
+
   void _listenToAlerts() {
     _alertSubscription = _alertService.alertStream.listen((alert) {
       setState(() => _currentAlert = alert);
       updateSyncTime();
 
-      // Jab alert aaye → EmergencyAlertScreen automatically kholo
       if (alert != null && alert.isActive && mounted) {
         Navigator.push(
           context,
@@ -64,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  /// INTERNET STATUS
   Future<void> checkInternet() async {
     var connectivityResult = await Connectivity().checkConnectivity();
     setState(() {
@@ -77,7 +91,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  /// GPS STATUS
   Future<void> checkGPS() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -101,7 +114,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => gpsStatus = "GPS Active");
   }
 
-  /// LOCATION PERMISSION
   Future<void> requestLocationPermission() async {
     PermissionStatus status = await Permission.location.request();
     if (status.isGranted) {
@@ -119,7 +131,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// LAST SYNC TIME
   void updateSyncTime() {
     setState(() {
       lastSync = DateFormat('hh:mm a').format(DateTime.now());
@@ -138,26 +149,13 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         elevation: 0,
         centerTitle: true,
-        title: const Text(
-          'Hello, Ali',
-          style: TextStyle(fontWeight: FontWeight.bold),
+        title: Text(
+          // ← CHANGED
+          'Hello, $_displayName',
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
-          // ── 🧪 MOCK TEST BUTTON (AppBar mein chupa hua) ──
-          // TO-DO: Remove before production
-          IconButton(
-            icon: const Icon(Icons.bug_report, color: Colors.orange, size: 20),
-            tooltip: 'Mock Test',
-            onPressed: () {
-              _alertService.triggerMockAlert(
-                hazardNodeId: 'G_STAIRS',
-                hazardType: 'fire',
-                floor: 'Ground',
-                reportedBy: 'TEST-001',
-              );
-            },
-          ),
-          
+          // Mock test button HATA DIYA ✓
           Padding(
             padding: const EdgeInsets.only(right: 15),
             child: GestureDetector(
@@ -178,7 +176,6 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  // ── Bell Icon Container ──
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     padding: const EdgeInsets.all(8),
@@ -207,7 +204,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // ── Red Badge — sirf emergency mein dikhega ──
                   if (_isEmergency)
                     Positioned(
                       top: -4,
@@ -267,7 +263,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 child: Column(
                   children: [
-                    /// TOP STATUS ROW
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -302,7 +297,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     const SizedBox(height: 25),
 
-                    /// SHIELD / WARNING ICON
                     Icon(
                       _isEmergency ? Icons.warning_rounded : Icons.shield,
                       color: _isEmergency ? Colors.red : AppColors.neonGreen,
@@ -311,7 +305,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     const SizedBox(height: 15),
 
-                    /// SAFE / DANGER TEXT
                     Text(
                       _isEmergency ? 'DANGER' : 'SAFE',
                       style: TextStyle(
@@ -324,7 +317,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     const SizedBox(height: 10),
 
-                    /// STATUS MESSAGE
                     Text(
                       _isEmergency
                           ? 'Emergency Alert Active!\n${_currentAlert!.hazardType.toUpperCase()} on ${_currentAlert!.floor} Floor'
@@ -340,7 +332,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     const SizedBox(height: 20),
 
-                    /// LAST SYNC
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -360,9 +351,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
 
-                    // ── START EVACUATION BUTTON ──
-                    // Emergency mein dikhega
-                    // → SlamInitializationScreen (location form) par le jata hai
                     if (_isEmergency) ...[
                       const SizedBox(height: 20),
                       SizedBox(
@@ -399,8 +387,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
 
-                      // Clear alert button (testing)
-                      // TO-DO: Remove before production
+                      // Clear alert button (testing) — production mein hata dena
                       TextButton(
                         onPressed: () => _alertService.clearAlert(),
                         child: const Text(
@@ -415,7 +402,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               const SizedBox(height: 40),
 
-              /// SOS BUTTON — bilkul same, koi change nahi
+              /// SOS BUTTON
               Expanded(
                 child: Center(
                   child: GestureDetector(
@@ -479,7 +466,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              /// BOTTOM NAVIGATION — bilkul same, koi change nahi
+              /// BOTTOM NAVIGATION
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 15),
                 decoration: BoxDecoration(
@@ -506,10 +493,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => const ProfileScreen(
-                              employeeName: 'Walid Bin Khalid',
-                              employeeId: 'CSLECT-002',
-                              department: 'Employer',
+                            builder: (_) => ProfileScreen(
+                              // ← CHANGED
+                              employeeName: _displayName,
+                              employeeId: _employeeId,
+                              department: _role,
                             ),
                           ),
                         );
@@ -567,4 +555,3 @@ class _BottomItem extends StatelessWidget {
     );
   }
 }
-
