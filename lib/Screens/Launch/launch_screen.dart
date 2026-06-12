@@ -28,8 +28,9 @@ class _LaunchScreenState extends State<LaunchScreen> {
   Future<void> checkLoginStatus() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
 
-    bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
-
+    String? token = prefs.getString('auth_token');
+    bool isLoggedIn = token != null && token.isNotEmpty;
+    
     await Future.delayed(const Duration(seconds: 3));
 
     if (!mounted) return;

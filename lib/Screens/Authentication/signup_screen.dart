@@ -1,7 +1,3 @@
-//  Changes:
-//    - Local SharedPrefs save HATA DIYA
-//    - ApiService().signup() se real backend call
-//    - Success pe WebSocket connect + PermissionScreen
 
 import 'package:flutter/material.dart';
 
